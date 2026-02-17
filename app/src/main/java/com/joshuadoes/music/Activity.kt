@@ -35,14 +35,16 @@ import android.widget.Toast
 import androidx.appcompat.widget.SearchView
 import com.google.android.material.color.DynamicColors
 import java.io.BufferedReader
+import java.io.BufferedWriter
 import java.net.URL
 import java.net.URLEncoder
 import java.nio.ByteBuffer
 
 class Libremedia : AppCompatActivity() {
     var appName = "libremedia"
-    var appVersion = "v0.1.0.0 preview 8"
+    var appVersion = "v0.1.0.0 preview 9"
     var appBuild = "$appName $appVersion"
+    val platform = getSystemProperty("ro.board.platform", "unknown")
 
     private lateinit var pathLibrary: String
     private lateinit var pathFfmpeg: String
@@ -87,33 +89,35 @@ class Libremedia : AppCompatActivity() {
     var targetFpsNanos = 1000000000L / 120
 
     val ptadNames = arrayOf(
-        "ASP: 775/20\nJoshuaDoes",
+        "ASP: 775/17\nJoshuaDoes",
         "ASP: 817/12\nSoft",
         "ASP: 817/13\nQuiet",
         "ASP: 817/14\nNormal",
         "ASP: 817/15\nLoud",
         "ASP: 817/16\nLouder",
+        "ASP: 817/17\nLoudest",
         "DSP: 817/17\nGoogle",
         "DSP: 817/18\nSamsung",
         "DSP: 835/14\nJoshuaDoes"
     )
     val pcm = arrayOf(
-        775, 817, 817, 817, 817, 817, 817, 817, 835
+        775, 817, 817, 817, 817, 817, 817, 817, 817, 835
     )
     val amp = arrayOf(
-        20, 12, 13, 14, 15, 16, 17, 18, 14
+        17, 12, 13, 14, 15, 16, 17, 17, 18, 14
     )
     val ramp = arrayOf(
-        "Off", ".5ms", ".5ms", ".5ms", ".5ms", ".5ms", "Off", ".5ms", ".5ms"
+        "Off", "Off", "Off", "Off", "Off", "Off", "Off", "Off", ".5ms", ".5ms"
     )
     val current = arrayOf(
-        "4.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A"
+        "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A", "3.50A"
     )
     val dsp = arrayOf(
-        "ASP", "ASP", "ASP", "ASP", "ASP", "ASP", "DSP", "DSP", "DSP"
+        "ASP", "ASP", "ASP", "ASP", "ASP", "ASP", "ASP", "DSP", "DSP", "DSP"
     )
 
     var hasHaptics = HapticGenerator.isAvailable()
+    val crossover: Long = 65 //Crossover frequency when hasHaptics is true
     var ptadAvailable = false
     var ptad = 0
     val ptadMax = ptadNames.size - 1
@@ -130,22 +134,22 @@ class Libremedia : AppCompatActivity() {
     var srcPrecision = "f64"
     var srcFmtChannels = AudioFormat.CHANNEL_OUT_STEREO
     var srcFmtEncoding = AudioFormat.ENCODING_PCM_FLOAT
-    var srcBufSize = AudioTrack.getMinBufferSize(srcSampleRate.toInt(), srcFmtChannels, srcFmtEncoding)
+    var srcBufSize = AudioTrack.getMinBufferSize(srcSampleRate.toInt(), srcFmtChannels, srcFmtEncoding) * 4
     var srcSampleSize: Long = 4
     var srcBufSamples = srcBufSize / srcChannels / srcSampleSize
-    var srcBufSamplesStreaming = 16
+    var srcBufSamplesStreaming = srcSampleSize * 4
 
     var hapSampleRate: Long = srcSampleRate
     var hapChannels: Long = srcChannels
-    var hapLowpass: Long = 65
+    var hapLowpass: Long = crossover
     var hapGain = 0.0
-    var hapGenDistortionGain = 2.0 //default on Pixel is 0.32, AKA 32% volume, safe up to 2.0 (200% volume) in testing but can be very fun higher if your songs don't max out their samples; consider it a hardware volume knob
+    var hapGenDistortionGain = 1.0 //default on Pixel is 0.32, AKA 32% volume, safe up to 2.0 (200% volume) in testing but can be very fun higher if your songs don't max out their samples; consider it a hardware volume knob
     var hapCodec = srcCodec
     var hapFormat = srcFormat
     var hapPrecision = srcPrecision
     var hapFmtChannels = srcFmtChannels
     var hapFmtEncoding = srcFmtEncoding
-    var hapBufSize = AudioTrack.getMinBufferSize(hapSampleRate.toInt(), hapFmtChannels, hapFmtEncoding)
+    var hapBufSize = AudioTrack.getMinBufferSize(hapSampleRate.toInt(), hapFmtChannels, hapFmtEncoding) * 4
     var hapSampleSize: Long = srcSampleSize
     var hapBufSamples = hapBufSize / hapChannels / hapSampleSize
     var hapBufSamplesStreaming = srcBufSamplesStreaming
@@ -309,10 +313,18 @@ class Libremedia : AppCompatActivity() {
         if (savedInstanceState == null) {
             oldOrientation = requestedOrientation
 
+            logV(appBuild)
+            logV("Platform: $platform")
+
+            //Detect board and raise the HapticGenerator distortion gain when on a known safe platform
+            if (platform == "gs101" || platform == "gs201" || platform == "zuma" || platform == "zumapro" || platform == "laguna") hapGenDistortionGain = 2.0
+
             ptadSetAllowed(-1)
             if (hasHaptics) {
-                srcHighpass = 65 //65Hz crossover
-                setHaptics(getHaptics())
+                //Set crossover
+                srcHighpass = crossover
+                hapLowpass = crossover
+                setHaptics(true)
             }
 
             logV("Ensuring stability of player")
@@ -359,34 +371,78 @@ class Libremedia : AppCompatActivity() {
         super.onDestroy()
     }
 
-    public fun initPrefs(context: Context) {
+    fun initPrefs(context: Context) {
         if (prefs != null)
             return
         prefs = context.getSharedPreferences("libremedia", Context.MODE_PRIVATE)
     }
 
-    public fun initPaths(context: Context) {
+    fun initPaths(context: Context) {
         pathLibrary = context.applicationInfo.nativeLibraryDir
         pathFfmpeg = "$pathLibrary/ffmpeg.so"
         pathTinymix = "$pathLibrary/tinymix.so"
         pathTinymixGo = "$pathLibrary/gotinymix.so"
     }
 
-    private fun runRoot(input: String): Boolean {
-        var suProcess: Process
+    fun getSystemProperty(key: String, defaultValue: String? = null): String? {
         try {
-            suProcess = Runtime.getRuntime().exec("su")
+            val clazz = Class.forName("android.os.SystemProperties")
+            val method = clazz.getDeclaredMethod("get", String::class.java, String::class.java)
+            return method.invoke(null, key, defaultValue) as String?
         } catch (e: Exception) {
-            e.printStackTrace()
-            return false
+            Log.e("SystemProperties", "Error getting system property: $key", e)
         }
-        val cmd = "$input\nexit\n"
-        suProcess.outputStream.write(cmd.toByteArray())
-        suProcess.outputStream.flush()
-        val respBuf = BufferedReader(suProcess.inputStream.reader())
-        logV("Root: $cmd\n\n" + respBuf.readText())
-        val ret = suProcess.waitFor()
-        return (ret != 255)
+        return defaultValue
+    }
+
+    private var suProcess: Process? = null
+    private var suStdin: BufferedWriter? = null
+    private var suStdout: BufferedReader? = null
+    private var suStderr: BufferedReader? = null
+    private fun runRoot(input: String): Triple<Boolean, String, String> {
+        // Lazily start root shell once
+        if (suProcess == null) {
+            try {
+                suProcess = Runtime.getRuntime().exec("su")
+                suStdin = suProcess!!.outputStream.bufferedWriter()
+                suStdout = suProcess!!.inputStream.bufferedReader()
+                suStderr = suProcess!!.errorStream.bufferedReader()
+            } catch (e: Exception) {
+                e.printStackTrace()
+                return Triple(false, "", e.toString())
+            }
+        }
+
+        if (input.isBlank()) {
+            return Triple(false, "", "")
+        }
+
+        // Marker to detect command completion
+        val marker = "__CMD_DONE_${System.nanoTime()}__"
+
+        // Execute command
+        suStdin!!.write(input)
+        suStdin!!.newLine()
+        suStdin!!.write("echo $marker")
+        suStdin!!.newLine()
+        suStdin!!.flush()
+
+        val outBuf = StringBuilder()
+        val errBuf = StringBuilder()
+
+        // Read stdout until marker
+        while (true) {
+            val line = suStdout!!.readLine() ?: break
+            if (line == marker) break
+            outBuf.appendLine(line)
+        }
+
+        // Drain stderr without blocking
+        while (suStderr!!.ready()) {
+            errBuf.appendLine(suStderr!!.readLine())
+        }
+
+        return Triple(true, outBuf.toString(), errBuf.toString())
     }
 
     fun ptadSetAllowed(to: Int, internal: Boolean = false) {
@@ -420,42 +476,79 @@ class Libremedia : AppCompatActivity() {
     }
     private fun ptadSet(to: Int, mixers: String = "", internal: Boolean = false): Int {
         var set = to
-        if (set == -1) {
-            set = prefs!!.getInt("PTAD", 0)
-        }
+        if (set == -1) set = prefs!!.getInt("PTAD", 0)
         with(prefs!!.edit()) {
             putInt("PTAD", set)
             apply()
         }
         ptad = set
 
-        if (!internal) {
-            ptadSetUI()
-        }
+        if (!internal) ptadSetUI()
 
         val playing = (isPlaying && !isPaused)
-        if (playing)
-            pauseAudio(true, true)
+        if (playing) pauseAudio(volFade = true, internal = true)
 
         val pcm = pcm[set]
         val amp = amp[set]
         val ramp = ramp[set]
         val current = current[set]
-        val dsp = dsp[set]
-        ptadAvailable = runRoot(
-            "$pathTinymixGo -t \"$pathTinymix\" -D 0 -m \"$mixers\" " +
-                    "-l -r -c \"Digital PCM Volume,AMP PCM Gain,PCM Soft Ramp,Boost Peak Current Limit,PCM Source,PCM Stream Wait Time in MSec\" " +
-                    "-v \"$pcm,$amp,$ramp,$current,$dsp,0\" "
-        )
-        runRoot("getprop vendor.audio.hapticgenerator.distortion.output.gain && setprop vendor.audio.hapticgenerator.distortion.output.gain $hapGenDistortionGain && getprop vendor.audio.hapticgenerator.distortion.output.gain")
-        logV("Set PTAD mode to: " + ptadNames[set])
+        var dsp = dsp[set]
 
-        if (!internal) {
-            ptadSetUI()
+        //Provide extra controls under certain conditions
+        var extraCtls = ""
+        var extraVals = ""
+
+        if (platform == "laguna") {
+            //Support laguna having two ASP modes; we want the first
+            extraCtls += ",DSP Bypass"
+            if (dsp == "ASP") {
+                dsp = "ASPRX1"
+                extraVals += ",1"
+            } else {
+                extraVals += ",0"
+            }
+
+            extraCtls += ",Noise Gate Delay"
+            extraVals += ",5ms"
         }
 
-        if (playing)
-            resumeAudio(true, true, true)
+        var cmd = ""
+        cmd += "$pathTinymixGo -t \"$pathTinymix\" -D 0 -m \"$mixers\" "
+        cmd += "-l -r -c \""
+        cmd += "Digital PCM Volume,Amp Gain,AMP PCM Gain,PCM Soft Ramp,Boost Peak Current Limit,PCM Source,PCM Stream Wait Time in MSec"
+        if (extraCtls != "") cmd += extraCtls
+        cmd += "\" -v \""
+        cmd += "$pcm,$amp,$amp,$ramp,$current,$dsp,0"
+        if (extraVals != "") cmd += extraVals
+        cmd += "\""
+
+        logV("Root: $cmd")
+        val (ran1, stdout1, stderr1) = runRoot(cmd)
+        if (stdout1 != "") logV("Stdout:\n$stdout1")
+        if (stderr1 != "") logV("Stderr:\n$stderr1")
+
+        ptadAvailable = ran1
+        if (ran1) {
+            logV("Set PTAD mode to: " + ptadNames[set])
+        } else {
+            logE("Disabled PTAD at runtime!")
+        }
+
+        if (!internal) ptadSetUI()
+
+        cmd = "getprop vendor.audio.hapticgenerator.distortion.output.gain && setprop vendor.audio.hapticgenerator.distortion.output.gain $hapGenDistortionGain && getprop vendor.audio.hapticgenerator.distortion.output.gain"
+
+        logV("Root: $cmd")
+        val (ran2, stdout2, stderr2) = runRoot(cmd)
+        if (stdout2 != "") logV("Stdout:\n$stdout2")
+        if (stderr2 != "") logV("Stderr:\n$stderr2")
+        if (ran2) {
+            logV("Set HapticGenerator distortion gain to: $hapGenDistortionGain")
+        } else {
+            logE("Failed to set HapticGenerator distortion gain!")
+        }
+
+        if (playing) resumeAudio(volFade = true, createHaptics = true, internal = true)
 
         return set
     }
@@ -862,7 +955,7 @@ class Libremedia : AppCompatActivity() {
                 }
 
                 if (hasHaptics) {
-                    hapBuffer = hapFfmpeg?.read(((hapSampleSize*hapChannels*hapBufSamplesStreaming) - hapBackBuf.size).toLong()) ?: null
+                    hapBuffer = hapFfmpeg?.read(((hapSampleSize*hapChannels*hapBufSamplesStreaming) - hapBackBuf.size))
                     if (hapBuffer == null) {
                         hapBuffer = ByteArray(0)
                     }
@@ -958,6 +1051,13 @@ class Libremedia : AppCompatActivity() {
                 logV("Main audio:\nError: $err\nStats: $stats\n\nHaptics audio:\nError: $err2\nStats: $stats2")
             } else {
                 logV("Main audio:\nError: $err\nStats: $stats")
+            }
+
+            srcFfmpeg?.close()
+            srcFfmpeg = null
+            if (hasHaptics) {
+                hapFfmpeg?.close()
+                hapFfmpeg = null
             }
         }
     }
